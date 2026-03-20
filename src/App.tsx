@@ -1,7 +1,12 @@
-import "./App.css";
+import OnboardingA from "./components/OnboardingA";
+import OnboardingB from "./components/OnboardingB";
 
 function App() {
-  return <></>;
+  return (
+    <>
+      <OnboardingA />
+    </>
+  );
 }
 
 export default App;
