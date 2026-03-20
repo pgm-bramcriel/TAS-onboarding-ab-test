@@ -23,7 +23,7 @@
 .onboarding-text {
   font-size: clamp(36px, 5.5vw, 88px);
   font-weight: bold;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05rem;
   color: #1d1d1d;
   margin: 0;
   text-align: center;
