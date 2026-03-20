@@ -10,10 +10,17 @@ const WASM_URL =
   "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.20/wasm";
 const MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
-const WAVE_WINDOW_MS = 1500;
-const REQUIRED_DIRECTION_CHANGES = 0.15;
-const MIN_MOVEMENT_PER_FRAME = 0.015;
-const MIN_TOTAL_RANGE = 0.18;
+const WAVE_WINDOW_MS = 2000;
+const REQUIRED_DIRECTION_CHANGES = 1;
+const MIN_HISTORY_POINTS = 4;
+const MIN_MOVEMENT_PER_FRAME = 0.004;
+const MIN_TOTAL_RANGE = 0.1;
+const SMOOTHING_ALPHA = 0.35;
+const FAST_MOVEMENT_SMOOTHING_ALPHA = 0.7;
+const FAST_MOVEMENT_DELTA = 0.03;
+const HAND_LOST_GRACE_MS = 500;
+const WRIST_INDEX = 0;
+const MIDDLE_FINGER_TIP_INDEX = 12;
 
 export default function MediapipeWaveDetector({
   onWaveDetected,
@@ -27,6 +34,8 @@ export default function MediapipeWaveDetector({
   const lastVideoTimeRef = useRef(-1);
   const waveDetectedRef = useRef(false);
   const movementHistoryRef = useRef<Array<{ x: number; t: number }>>([]);
+  const smoothedXRef = useRef<number | null>(null);
+  const lastHandSeenAtRef = useRef(0);
 
   useEffect(() => {
     let isMounted = true;
@@ -41,6 +50,10 @@ export default function MediapipeWaveDetector({
         now - movementHistory[0].t > WAVE_WINDOW_MS
       ) {
         movementHistory.shift();
+      }
+
+      if (movementHistory.length < MIN_HISTORY_POINTS) {
+        return false;
       }
 
       let directionChanges = 0;
@@ -69,6 +82,23 @@ export default function MediapipeWaveDetector({
         directionChanges >= REQUIRED_DIRECTION_CHANGES &&
         totalRange >= MIN_TOTAL_RANGE
       );
+    };
+
+    const getTrackedX = (landmarks: { x: number }[]) => {
+      const wristX = landmarks[WRIST_INDEX]?.x;
+      const middleTipX = landmarks[MIDDLE_FINGER_TIP_INDEX]?.x;
+
+      if (wristX == null && middleTipX == null) {
+        return null;
+      }
+      if (wristX == null) {
+        return middleTipX!;
+      }
+      if (middleTipX == null) {
+        return wristX;
+      }
+
+      return (wristX + middleTipX) / 2;
     };
 
     const processFrame = () => {
@@ -138,16 +168,37 @@ export default function MediapipeWaveDetector({
         }
 
         if (firstHand) {
+          const now = Date.now();
+          lastHandSeenAtRef.current = now;
           onStatusChange?.("Hand detected. Wave to continue.");
-          const waved = detectWave(Date.now(), firstHand[0].x);
-          if (waved && !waveDetectedRef.current) {
-            waveDetectedRef.current = true;
-            onStatusChange?.("Wave detected. Starting...");
-            onWaveDetected?.();
+          const trackedX = getTrackedX(firstHand);
+          if (trackedX != null) {
+            const previousSmoothedX = smoothedXRef.current;
+            const adaptiveSmoothingAlpha =
+              previousSmoothedX != null &&
+              Math.abs(trackedX - previousSmoothedX) > FAST_MOVEMENT_DELTA
+                ? FAST_MOVEMENT_SMOOTHING_ALPHA
+                : SMOOTHING_ALPHA;
+            const smoothedX =
+              previousSmoothedX == null
+                ? trackedX
+                : previousSmoothedX +
+                  (trackedX - previousSmoothedX) * adaptiveSmoothingAlpha;
+            smoothedXRef.current = smoothedX;
+
+            const waved = detectWave(now, smoothedX);
+            if (waved && !waveDetectedRef.current) {
+              waveDetectedRef.current = true;
+              onStatusChange?.("Wave detected. Starting...");
+              onWaveDetected?.();
+            }
           }
         } else {
-          onStatusChange?.("Show one hand to the camera.");
-          movementHistoryRef.current = [];
+          if (Date.now() - lastHandSeenAtRef.current > HAND_LOST_GRACE_MS) {
+            onStatusChange?.("Show one hand to the camera.");
+            movementHistoryRef.current = [];
+            smoothedXRef.current = null;
+          }
         }
       }
 
@@ -164,9 +215,9 @@ export default function MediapipeWaveDetector({
           },
           runningMode: "VIDEO",
           numHands: 1,
-          minHandDetectionConfidence: 0.6,
-          minHandPresenceConfidence: 0.6,
-          minTrackingConfidence: 0.6,
+          minHandDetectionConfidence: 0.45,
+          minHandPresenceConfidence: 0.45,
+          minTrackingConfidence: 0.45,
         });
 
         if (!isMounted) {
@@ -178,8 +229,8 @@ export default function MediapipeWaveDetector({
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: false,
           video: {
-            width: { ideal: 320 },
-            height: { ideal: 240 },
+            width: { ideal: 640 },
+            height: { ideal: 480 },
             facingMode: "user",
           },
         });
